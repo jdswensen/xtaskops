@@ -83,28 +83,50 @@ pub fn ci() -> AnyResult<()> {
 /// Fails if any command fails
 ///
 pub fn coverage(devmode: bool) -> AnyResult<()> {
-    remove_dir("coverage")?;
-    create_dir_all("coverage")?;
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or("./target".to_string());
+    let bin_path = format!("{target_dir}/debug/deps");
+    let coverage_dir = std::env::var("XTASKOPS_COVERAGE_DIR").unwrap_or("./coverage".to_string());
+
+    // Setup llvm profiling
+    let use_profile_in_coverage_dir = match std::env::var("XTASKOPS_PROFILE_IN_COVERAGE_DIR").unwrap_or("false".to_string()).as_str() {
+        "true" |
+        "TRUE" |
+        "True" => true,
+        _ => false,
+    };
+
+    let (llvm_profile_file_prepend, grcov_path) = if use_profile_in_coverage_dir {
+        (format!("{coverage_dir}/"), coverage_dir.as_str())
+    } else {
+        ("".to_string(), ".")
+    };
+
+    let llvm_profile_file = format!("{llvm_profile_file_prepend}cargo-test-%p-%m.profraw");
+
+    // Recreate coverage directory
+    remove_dir(&coverage_dir)?;
+    create_dir_all(&coverage_dir)?;
 
     println!("=== running coverage ===");
     cmd!("cargo", "test")
         .env("CARGO_INCREMENTAL", "0")
         .env("RUSTFLAGS", "-Cinstrument-coverage")
-        .env("LLVM_PROFILE_FILE", "cargo-test-%p-%m.profraw")
+        .env("LLVM_PROFILE_FILE", llvm_profile_file)
         .run()?;
     println!("ok.");
 
     println!("=== generating report ===");
     let (fmt, file) = if devmode {
-        ("html", "coverage/html")
+        ("html", format!("{coverage_dir}/html"))
     } else {
-        ("lcov", "coverage/tests.lcov")
+        ("lcov", format!("{coverage_dir}/tests.lcov"))
     };
+
     cmd!(
         "grcov",
-        ".",
+        grcov_path,
         "--binary-path",
-        "./target/debug/deps",
+        bin_path,
         "-s",
         ".",
         "-t",
@@ -120,17 +142,18 @@ pub fn coverage(devmode: bool) -> AnyResult<()> {
         "--ignore",
         "*/src/tests/*",
         "-o",
-        file,
+        file.as_str(),
     )
     .run()?;
     println!("ok.");
 
     println!("=== cleaning up ===");
     clean_files("**/*.profraw")?;
+    clean_files(format!("{coverage_dir}/*.profraw").as_str())?;
     println!("ok.");
     if devmode {
         if confirm("open report folder?") {
-            cmd!("open", file).run()?;
+            cmd!("open", file.as_str()).run()?;
         } else {
             println!("report location: {file}");
         }
